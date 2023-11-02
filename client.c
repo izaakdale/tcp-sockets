@@ -26,7 +26,16 @@ void setup_tcp_communication()
   dest.sin_addr = *((struct in_addr *)host->h_addr);
 
   sock_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  connect(sock_fd, (struct sockaddr *)&dest, addrln);
+  if (sock_fd < 0)
+  {
+    printf("failed to create socket\n");
+    exit(1);
+  }
+  if ((connect(sock_fd, (struct sockaddr *)&dest, addrln)) < 0)
+  {
+    printf("failed to connect to server\n");
+    exit(1);
+  }
 
 PROMPT_USER:
   printf("Enter value for a = ");
