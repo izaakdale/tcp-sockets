@@ -25,12 +25,6 @@ void startServer()
     exit(EXIT_FAILURE);
   }
 
-  if (setsockopt(master_socket_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0)
-  {
-    printf("TCP socket creation failed for multiple connections\n");
-    exit(EXIT_FAILURE);
-  }
-
   server_addr.sin_family = AF_INET;
   server_addr.sin_port = htons(SERVER_PORT);
   server_addr.sin_addr.s_addr = INADDR_ANY;
