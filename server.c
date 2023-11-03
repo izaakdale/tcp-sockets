@@ -10,94 +10,162 @@
 #include "common.h"
 
 #define SERVER_PORT 8080
-char data_buffer[1024];
+#define MAX_N_CLIENTS 32
 
-void startServer()
+int monitored_fd_set[MAX_N_CLIENTS];
+static void initilise_fd_set()
 {
-  int master_socket_fd = 0, comm_socket_fd = 0, opt = 1;
-  fd_set readfds;
+  for (int i = 0; i < MAX_N_CLIENTS; i++)
+  {
+    monitored_fd_set[i] = -1;
+  }
+}
+static void add_to_fd_set(int fd)
+{
+  for (int i = 0; i < MAX_N_CLIENTS; i++)
+  {
+    if (monitored_fd_set[i] == -1)
+    {
+      monitored_fd_set[i] = fd;
+      break;
+    }
+  }
+}
+static void remove_from_monitored_fd_set(int fd)
+{
+  for (int i = 0; i < MAX_N_CLIENTS; i++)
+  {
+    if (monitored_fd_set[i] == fd)
+    {
+      monitored_fd_set[i] = -1;
+      break;
+    }
+  }
+}
+static void reinit_readfds(fd_set *p_fd_set)
+{
+  FD_ZERO(p_fd_set);
+  for (int i = 0; i < MAX_N_CLIENTS; i++)
+  {
+    if (monitored_fd_set[i] != -1)
+    {
+      FD_SET(monitored_fd_set[i], p_fd_set);
+    }
+  }
+}
+static int get_max_fd()
+{
+  int max = -1;
+  for (int i = 0; i < MAX_N_CLIENTS; i++)
+  {
+    if (monitored_fd_set[i] > max)
+    {
+      max = monitored_fd_set[i];
+    }
+  }
+  return max;
+}
 
-  struct sockaddr_in server_addr, client_addr;
+void startMuxServer()
+{
+  initilise_fd_set();
 
+  int master_socket_fd = 0;
   if ((master_socket_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
   {
-    printf("failed to create socket\n");
+    printf("socket creation failed\n");
     exit(EXIT_FAILURE);
   }
 
+  struct sockaddr_in server_addr;
   server_addr.sin_family = AF_INET;
   server_addr.sin_port = htons(SERVER_PORT);
   server_addr.sin_addr.s_addr = INADDR_ANY;
 
-  uint addrln = sizeof(struct sockaddr);
+  struct sockaddr_in client_addr;
 
-  if (bind(master_socket_fd, (struct sockaddr *)&server_addr, addrln) < 0)
+  uint addrln = sizeof(struct sockaddr_in);
+
+  if ((bind(master_socket_fd, (struct sockaddr *)&server_addr, addrln)) < 0)
   {
-    printf("socket bind failed\n");
+    printf("bind failure\n");
     exit(EXIT_FAILURE);
   }
 
-  if (listen(master_socket_fd, 5) < 0)
+  if ((listen(master_socket_fd, 5)) < 0)
   {
-    printf("listen failed\n");
+    printf("listen failure\n");
     exit(EXIT_FAILURE);
   }
+  add_to_fd_set(master_socket_fd);
 
+  fd_set readfds;
   while (1)
   {
-    FD_ZERO(&readfds);
-    FD_SET(master_socket_fd, &readfds);
+    reinit_readfds(&readfds);
 
-    select(master_socket_fd + 1, &readfds, NULL, NULL, NULL);
+    printf("Blocking on select system call\n");
+
+    select(get_max_fd() + 1, &readfds, NULL, NULL, NULL);
+
+    printf("Selected a file descriptor\n");
 
     if (FD_ISSET(master_socket_fd, &readfds))
     {
-      printf("New connection request received\n");
-
-      comm_socket_fd = accept(master_socket_fd, (struct sockaddr *)&client_addr, &addrln);
-
+      printf("New connection request\n");
+      int comm_socket_fd = accept(master_socket_fd, (struct sockaddr *)&client_addr, &addrln);
       if (comm_socket_fd < 0)
       {
-        printf("client socket accept failure\n");
-        exit(0);
+        printf("client accept failure\n");
+        exit(EXIT_FAILURE);
       }
 
-      printf("connection from %s:%u\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-
-      while (1)
+      add_to_fd_set(comm_socket_fd);
+      printf("Connection to client %s:%u accepted\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+    }
+    else
+    {
+      for (int i = 0; i < MAX_N_CLIENTS; i++)
       {
-        memset(data_buffer, 0, sizeof(data_buffer));
-
-        uint sent_recv_bytes = recvfrom(comm_socket_fd, (char *)&data_buffer, sizeof(data_buffer), 0, (struct sockaddr *)&client_addr, &addrln);
-        printf("server recieved %d bytes from the client %s:%u\n", sent_recv_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-
-        if (sent_recv_bytes == 0)
+        if (FD_ISSET(monitored_fd_set[i], &readfds))
         {
-          close(comm_socket_fd);
-          break;
+          int comm_socket_fd = monitored_fd_set[i];
+
+          char data_buffer[1024];
+          memset(data_buffer, 0, sizeof(data_buffer));
+
+          int sent_recv_bytes = recvfrom(comm_socket_fd, &data_buffer, sizeof(data_buffer), 0, (struct sockaddr *)&client_addr, &addrln);
+
+          if (sent_recv_bytes == 0)
+          {
+            close(comm_socket_fd);
+            remove_from_monitored_fd_set(comm_socket_fd);
+            break;
+          }
+
+          request_struct_t *client_data = (request_struct_t *)data_buffer;
+
+          if (client_data->a == 0 && client_data->b == 0)
+          {
+            close(comm_socket_fd);
+            remove_from_monitored_fd_set(comm_socket_fd);
+            break;
+          }
+
+          response_struct_t result;
+          result.c = client_data->a + client_data->b;
+
+          sent_recv_bytes = sendto(comm_socket_fd, (char *)&result, sizeof(response_struct_t), 0, (struct sockaddr *)&client_addr, sizeof(struct sockaddr));
+
+          printf("server sent %d bytes to client %s:%u\n", sent_recv_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
         }
-
-        request_struct_t *client_data = (request_struct_t *)data_buffer;
-
-        if (client_data->a == 0 && client_data->b == 0)
-        {
-          close(comm_socket_fd);
-          break;
-        }
-
-        response_struct_t result;
-        result.c = client_data->a + client_data->b;
-
-        sent_recv_bytes = sendto(comm_socket_fd, (char *)&result, sizeof(response_struct_t), 0, (struct sockaddr *)&client_addr, sizeof(struct sockaddr));
-
-        printf("server sent %d bytes to client %s:%u\n", sent_recv_bytes, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
       }
     }
   }
 }
 
-int main(int argc, char **argv)
+int main(int argc, char const *argv[])
 {
-  startServer();
+  startMuxServer();
   return 0;
 }
